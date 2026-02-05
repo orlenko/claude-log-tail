@@ -2,10 +2,9 @@
 
 Tail Claude JSONL conversation logs with rich terminal formatting.
 
-This repo includes two implementations:
+This repo includes a Python implementation:
 
 - `claude-log-tail.py` (Python, stdlib-only)
-- `claude-log-tail.sh` (Bash + `jq`, optional `multitail` mode)
 
 ## Usage
 
@@ -13,18 +12,6 @@ This repo includes two implementations:
 
 ```bash
 ./claude-log-tail.py <directory>
-```
-
-### Bash version
-
-```bash
-./claude-log-tail.sh <directory>
-```
-
-Optional multitail UI:
-
-```bash
-./claude-log-tail.sh -m <directory>
 ```
 
 ## What it does
@@ -37,11 +24,4 @@ Optional multitail UI:
 ## Dependencies
 
 - Python tool: no external dependencies
-- Bash tool: `jq`
-- Optional for `-m`: `multitail`
 
-Install bash dependencies on macOS:
-
-```bash
-brew install jq multitail
-```
