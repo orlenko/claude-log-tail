@@ -1,6 +1,6 @@
 {
   "name": "claude-log-tail",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tail Claude JSONL conversation logs with rich terminal formatting.",
   "license": "MIT",
   "type": "commonjs",
