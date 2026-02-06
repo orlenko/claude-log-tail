@@ -1,0 +1,28 @@
+{
+  "name": "claude-log-tail",
+  "version": "0.1.0",
+  "description": "Tail Claude JSONL conversation logs with rich terminal formatting.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "claude-log-tail": "./claude-log-tail.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node ./claude-log-tail.js"
+  },
+  "files": [
+    "claude-log-tail.js",
+    "claude-log-tail.py",
+    "README.md"
+  ],
+  "keywords": [
+    "claude",
+    "logs",
+    "tail",
+    "jsonl",
+    "cli"
+  ]
+}

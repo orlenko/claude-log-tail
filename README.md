@@ -2,11 +2,25 @@
 
 Tail Claude JSONL conversation logs with rich terminal formatting.
 
-This repo includes a Python implementation:
+This repo includes two implementations:
 
 - `claude-log-tail.py` (Python, stdlib-only)
+- `claude-log-tail.js` (Node.js, stdlib-only, npm-ready)
 
 ## Usage
+
+### Node.js version (npm / npx)
+
+```bash
+npx claude-log-tail ~/.claude/projects
+```
+
+Or install globally:
+
+```bash
+npm install -g claude-log-tail
+claude-log-tail ~/.claude/projects
+```
 
 ### Python version
 
@@ -24,4 +38,4 @@ This repo includes a Python implementation:
 ## Dependencies
 
 - Python tool: no external dependencies
-
+- Node.js tool: no external dependencies
