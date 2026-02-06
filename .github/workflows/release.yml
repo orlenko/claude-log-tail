@@ -1,4 +1,4 @@
-name: Release and Publish
+name: Publish to npm
 
 on:
   push:
@@ -6,55 +6,52 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: write
-  id-token: write
-
 concurrency:
-  group: npm-release-main
+  group: npm-publish-main
   cancel-in-progress: false
 
 jobs:
-  release:
-    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]') }}
+  publish:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
-      - name: Check out repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
+          registry-url: "https://registry.npmjs.org"
 
-      - name: Verify CLI syntax
-        run: node --check claude-log-tail.js
-
-      - name: Ensure NPM token is configured
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN secret is required."
-            exit 1
-          fi
-
-      - name: Configure Git author
+      - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Bump patch version and create tag
-        run: npm version patch -m "chore(release): %s [skip ci]"
+        id: version
+        run: |
+          npm version patch -m "chore(release): %s [skip ci]"
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Push release commit and tag
-        run: git push origin HEAD:main --follow-tags
+      - name: Verify CLI syntax
+        run: node --check claude-log-tail.js
 
-      - name: Publish package
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
+
+      - name: Push version commit and tag
+        run: git push origin HEAD:main --follow-tags
