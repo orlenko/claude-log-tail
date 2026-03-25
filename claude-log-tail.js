@@ -24,7 +24,6 @@ const C_DEF = "\x1b[38;5;252m";
 
 const MAX_CONTENT_LEN = 300;
 const POLL_INTERVAL_MS = 5000;
-const FILE_SCAN_INTERVAL_MS = 30_000;
 const DRAIN_DELAY_MS = 50;
 
 function getProjectName(filepath, basedir) {
@@ -289,7 +288,6 @@ function run() {
       }
     }
     clearInterval(pollTimer);
-    clearInterval(scanTimer);
     process.stdout.write(`\n${C_TIME}Shutting down...${C_RESET}\n`);
     process.exit(0);
   };
@@ -408,65 +406,14 @@ function run() {
   console.log("Press Ctrl+C to exit.");
   console.log("---");
 
-  // --- Fallback poll: stat only tracked files ---
+  // --- Fallback poll: stat only tracked files (no full tree walk) ---
   function pollTrackedFiles() {
     for (const filepath of filePositions.keys()) {
       drainFile(filepath, filePositions, basedir);
     }
   }
 
-  // Full scan: rediscover files (handles new directories, removed files)
-  function fullScan() {
-    const currentFiles = findJsonlFiles(basedir);
-
-    for (const filepath of currentFiles) {
-      if (!filePositions.has(filepath)) {
-        try {
-          filePositions.set(filepath, fs.statSync(filepath).size);
-        } catch {
-          filePositions.set(filepath, 0);
-        }
-        watchDirectory(path.dirname(filepath));
-
-        const project = getProjectName(filepath, basedir);
-        const time = new Date().toLocaleTimeString("en-US", {
-          hour12: false,
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        });
-        console.log(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}`);
-      }
-    }
-
-    for (const filepath of filePositions.keys()) {
-      if (!currentFiles.has(filepath)) {
-        filePositions.delete(filepath);
-      }
-    }
-
-    // Clean up watchers for directories with no tracked files
-    const activeDirs = new Set();
-    for (const filepath of filePositions.keys()) {
-      activeDirs.add(path.dirname(filepath));
-    }
-    for (const dirPath of dirWatchers.keys()) {
-      if (!activeDirs.has(dirPath)) {
-        const watcher = dirWatchers.get(dirPath);
-        if (watcher) {
-          try {
-            watcher.close();
-          } catch {
-            // ignore
-          }
-        }
-        dirWatchers.delete(dirPath);
-      }
-    }
-  }
-
   const pollTimer = setInterval(pollTrackedFiles, POLL_INTERVAL_MS);
-  const scanTimer = setInterval(fullScan, FILE_SCAN_INTERVAL_MS);
 }
 
 run();
