@@ -254,7 +254,7 @@ function drainFile(filepath, filePositions, basedir) {
 
         const formatted = formatLine(line, project);
         if (formatted) {
-          console.log(formatted);
+          process.stdout.write(`${formatted}\n`);
         }
       }
 
@@ -269,7 +269,7 @@ function drainFile(filepath, filePositions, basedir) {
 
 function run() {
   if (process.argv.length < 3) {
-    console.log("Usage: claude-log-tail <directory>");
+    process.stdout.write("Usage: claude-log-tail <directory>\n");
     process.exit(1);
   }
 
@@ -365,7 +365,7 @@ function run() {
             minute: "2-digit",
             second: "2-digit",
           });
-          console.log(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}`);
+          process.stdout.write(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}\n`);
 
           changedFiles.add(fullPath);
           scheduleDrain();
@@ -388,7 +388,7 @@ function run() {
   }
 
   // --- Initial file discovery ---
-  console.log(`Monitoring JSONL files in: ${basedir}`);
+  process.stdout.write(`Monitoring JSONL files in: ${basedir}\n`);
 
   const knownFiles = findJsonlFiles(basedir);
   for (const filepath of knownFiles) {
@@ -400,11 +400,11 @@ function run() {
     watchDirectory(path.dirname(filepath));
   }
 
-  console.log(
-    `Monitoring ${filePositions.size} JSONL files in ${dirWatchers.size} directories.`,
+  process.stdout.write(
+    `Monitoring ${filePositions.size} JSONL files in ${dirWatchers.size} directories.\n`,
   );
-  console.log("Press Ctrl+C to exit.");
-  console.log("---");
+  process.stdout.write("Press Ctrl+C to exit.\n");
+  process.stdout.write("---\n");
 
   // --- Fallback poll: stat only tracked files (no full tree walk) ---
   function pollTrackedFiles() {
