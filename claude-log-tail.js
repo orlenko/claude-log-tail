@@ -23,8 +23,9 @@ const C_ERR = "\x1b[38;5;196m";
 const C_DEF = "\x1b[38;5;252m";
 
 const MAX_CONTENT_LEN = 300;
-const POLL_INTERVAL_MS = 500;
-const FILE_SCAN_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 5000;
+const FILE_SCAN_INTERVAL_MS = 30_000;
+const DRAIN_DELAY_MS = 50;
 
 function getProjectName(filepath, basedir) {
   const rel = path.relative(basedir, filepath);
@@ -228,6 +229,45 @@ function findJsonlFiles(basedir) {
   return files;
 }
 
+function drainFile(filepath, filePositions, basedir) {
+  try {
+    const currentSize = fs.statSync(filepath).size;
+    const lastPos = filePositions.get(filepath) || 0;
+
+    if (currentSize <= lastPos) {
+      return;
+    }
+
+    const project = getProjectName(filepath, basedir);
+    const bytesToRead = currentSize - lastPos;
+    const fd = fs.openSync(filepath, "r");
+
+    try {
+      const buffer = Buffer.alloc(bytesToRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, lastPos);
+      const text = buffer.toString("utf8", 0, bytesRead);
+
+      for (const lineRaw of text.split(/\r?\n/)) {
+        const line = lineRaw.trimEnd();
+        if (!line) {
+          continue;
+        }
+
+        const formatted = formatLine(line, project);
+        if (formatted) {
+          console.log(formatted);
+        }
+      }
+
+      filePositions.set(filepath, lastPos + bytesRead);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    // File may have been deleted
+  }
+}
+
 function run() {
   if (process.argv.length < 3) {
     console.log("Usage: claude-log-tail <directory>");
@@ -241,81 +281,153 @@ function run() {
   }
 
   const shutdown = () => {
+    for (const watcher of dirWatchers.values()) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore
+      }
+    }
+    clearInterval(pollTimer);
+    clearInterval(scanTimer);
     process.stdout.write(`\n${C_TIME}Shutting down...${C_RESET}\n`);
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  console.log(`Monitoring JSONL files in: ${basedir}`);
-  console.log(
-    `Polling every ${POLL_INTERVAL_MS / 1000}s. New files checked every ${FILE_SCAN_INTERVAL_MS / 1000}s.`,
-  );
-  console.log("Press Ctrl+C to exit.");
-  console.log("---");
-
   const filePositions = new Map();
-  let knownFiles = findJsonlFiles(basedir);
+  const dirWatchers = new Map();
 
-  console.log(`Monitoring ${knownFiles.size} JSONL files`);
-  console.log("---");
+  // --- Debounced drain mechanism ---
+  const changedFiles = new Set();
+  let drainScheduled = false;
 
+  function scheduleDrain() {
+    if (drainScheduled) {
+      return;
+    }
+    drainScheduled = true;
+    setTimeout(flushChanges, DRAIN_DELAY_MS);
+  }
+
+  function flushChanges() {
+    drainScheduled = false;
+    const paths = Array.from(changedFiles);
+    changedFiles.clear();
+
+    for (const filepath of paths) {
+      if (!filePositions.has(filepath)) {
+        continue;
+      }
+      drainFile(filepath, filePositions, basedir);
+    }
+  }
+
+  // --- Per-directory watcher ---
+  function watchDirectory(dirPath) {
+    if (dirWatchers.has(dirPath)) {
+      return;
+    }
+
+    try {
+      const watcher = fs.watch(dirPath, (_eventType, filename) => {
+        if (!filename) {
+          return;
+        }
+
+        const fullPath = path.join(dirPath, filename);
+
+        // Already tracked? Mark changed.
+        if (filePositions.has(fullPath)) {
+          changedFiles.add(fullPath);
+          scheduleDrain();
+          return;
+        }
+
+        // New .jsonl file?
+        if (filename.endsWith(".jsonl")) {
+          let stats;
+          try {
+            stats = fs.statSync(fullPath);
+          } catch {
+            return;
+          }
+          if (!stats.isFile()) {
+            return;
+          }
+
+          filePositions.set(fullPath, 0);
+          watchDirectory(path.dirname(fullPath));
+
+          const project = getProjectName(fullPath, basedir);
+          const time = new Date().toLocaleTimeString("en-US", {
+            hour12: false,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+          console.log(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}`);
+
+          changedFiles.add(fullPath);
+          scheduleDrain();
+        }
+      });
+
+      watcher.on("error", () => {
+        dirWatchers.delete(dirPath);
+        try {
+          watcher.close();
+        } catch {
+          // ignore
+        }
+      });
+
+      dirWatchers.set(dirPath, watcher);
+    } catch {
+      // Can't watch this directory; will rely on fallback poll
+    }
+  }
+
+  // --- Initial file discovery ---
+  console.log(`Monitoring JSONL files in: ${basedir}`);
+
+  const knownFiles = findJsonlFiles(basedir);
   for (const filepath of knownFiles) {
     try {
       filePositions.set(filepath, fs.statSync(filepath).size);
     } catch {
       filePositions.set(filepath, 0);
     }
+    watchDirectory(path.dirname(filepath));
   }
 
-  let lastFileScan = Date.now();
+  console.log(
+    `Monitoring ${filePositions.size} JSONL files in ${dirWatchers.size} directories.`,
+  );
+  console.log("Press Ctrl+C to exit.");
+  console.log("---");
 
-  setInterval(() => {
-    for (const filepath of knownFiles) {
-      try {
-        const currentSize = fs.statSync(filepath).size;
-        const lastPos = filePositions.get(filepath) || 0;
-
-        if (currentSize > lastPos) {
-          const project = getProjectName(filepath, basedir);
-          const bytesToRead = currentSize - lastPos;
-          const fd = fs.openSync(filepath, "r");
-
-          try {
-            const buffer = Buffer.alloc(bytesToRead);
-            const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, lastPos);
-            const text = buffer.toString("utf8", 0, bytesRead);
-
-            for (const lineRaw of text.split(/\r?\n/)) {
-              const line = lineRaw.trimEnd();
-              if (!line) {
-                continue;
-              }
-
-              const formatted = formatLine(line, project);
-              if (formatted) {
-                console.log(formatted);
-              }
-            }
-
-            filePositions.set(filepath, lastPos + bytesRead);
-          } finally {
-            fs.closeSync(fd);
-          }
-        }
-      } catch {
-        // File may have been deleted between scans.
-      }
+  // --- Fallback poll: stat only tracked files ---
+  function pollTrackedFiles() {
+    for (const filepath of filePositions.keys()) {
+      drainFile(filepath, filePositions, basedir);
     }
+  }
 
-    const now = Date.now();
-    if (now - lastFileScan >= FILE_SCAN_INTERVAL_MS) {
-      lastFileScan = now;
+  // Full scan: rediscover files (handles new directories, removed files)
+  function fullScan() {
+    const currentFiles = findJsonlFiles(basedir);
 
-      const currentFiles = findJsonlFiles(basedir);
-      const newFiles = [...currentFiles].filter((f) => !knownFiles.has(f)).sort();
+    for (const filepath of currentFiles) {
+      if (!filePositions.has(filepath)) {
+        try {
+          filePositions.set(filepath, fs.statSync(filepath).size);
+        } catch {
+          filePositions.set(filepath, 0);
+        }
+        watchDirectory(path.dirname(filepath));
 
-      for (const filepath of newFiles) {
         const project = getProjectName(filepath, basedir);
         const time = new Date().toLocaleTimeString("en-US", {
           hour12: false,
@@ -324,23 +436,37 @@ function run() {
           second: "2-digit",
         });
         console.log(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}`);
-
-        try {
-          filePositions.set(filepath, fs.statSync(filepath).size);
-        } catch {
-          filePositions.set(filepath, 0);
-        }
       }
-
-      for (const filepath of knownFiles) {
-        if (!currentFiles.has(filepath)) {
-          filePositions.delete(filepath);
-        }
-      }
-
-      knownFiles = currentFiles;
     }
-  }, POLL_INTERVAL_MS);
+
+    for (const filepath of filePositions.keys()) {
+      if (!currentFiles.has(filepath)) {
+        filePositions.delete(filepath);
+      }
+    }
+
+    // Clean up watchers for directories with no tracked files
+    const activeDirs = new Set();
+    for (const filepath of filePositions.keys()) {
+      activeDirs.add(path.dirname(filepath));
+    }
+    for (const dirPath of dirWatchers.keys()) {
+      if (!activeDirs.has(dirPath)) {
+        const watcher = dirWatchers.get(dirPath);
+        if (watcher) {
+          try {
+            watcher.close();
+          } catch {
+            // ignore
+          }
+        }
+        dirWatchers.delete(dirPath);
+      }
+    }
+  }
+
+  const pollTimer = setInterval(pollTrackedFiles, POLL_INTERVAL_MS);
+  const scanTimer = setInterval(fullScan, FILE_SCAN_INTERVAL_MS);
 }
 
 run();
