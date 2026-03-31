@@ -280,6 +280,9 @@ function run() {
   }
 
   const shutdown = () => {
+    if (rootWatcher) {
+      rootWatcher.close();
+    }
     for (const watcher of dirWatchers.values()) {
       try {
         watcher.close();
@@ -385,6 +388,69 @@ function run() {
     } catch {
       // Can't watch this directory; will rely on fallback poll
     }
+  }
+
+  // --- Recursive watcher on root for new file/directory discovery ---
+  // On macOS, fs.watch({ recursive: true }) uses FSEvents — a single
+  // efficient kernel subscription. We filter early: only react to .jsonl
+  // filenames, skipping costly statSync on everything else.
+  let rootWatcher = null;
+  try {
+    rootWatcher = fs.watch(basedir, { recursive: true }, (_eventType, filename) => {
+      if (!filename) {
+        return;
+      }
+
+      const basename = path.basename(filename);
+      const fullPath = path.join(basedir, filename);
+
+      // Already tracked? Mark changed.
+      if (filePositions.has(fullPath)) {
+        changedFiles.add(fullPath);
+        scheduleDrain();
+        return;
+      }
+
+      // Only stat .jsonl files — skip everything else.
+      if (!basename.endsWith(".jsonl")) {
+        return;
+      }
+
+      let stats;
+      try {
+        stats = fs.statSync(fullPath);
+      } catch {
+        return;
+      }
+      if (!stats.isFile()) {
+        return;
+      }
+
+      // New .jsonl file discovered
+      filePositions.set(fullPath, 0);
+      watchDirectory(path.dirname(fullPath));
+
+      const project = getProjectName(fullPath, basedir);
+      const time = new Date().toLocaleTimeString("en-US", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      process.stdout.write(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}\n`);
+
+      changedFiles.add(fullPath);
+      scheduleDrain();
+    });
+
+    rootWatcher.on("error", () => {
+      if (rootWatcher) {
+        rootWatcher.close();
+        rootWatcher = null;
+      }
+    });
+  } catch {
+    rootWatcher = null;
   }
 
   // --- Initial file discovery ---
