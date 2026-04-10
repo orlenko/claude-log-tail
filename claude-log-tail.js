@@ -4,7 +4,7 @@
 /**
  * claude-log-tail.js - Monitor Claude JSONL conversation logs with colored output
  *
- * Usage: claude-log-tail <directory>
+ * Usage: claude-log-tail [--json] <directory>
  *
  * No external dependencies required - uses Node.js stdlib only.
  */
@@ -160,6 +160,62 @@ function parseTimestampLocal(ts) {
   }
 }
 
+function formatLineJson(line, project, sessionId) {
+  let data;
+  try {
+    data = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  const messageType = getEffectiveType(data);
+  if (messageType === "file-history-snapshot" || messageType === "progress") {
+    return null;
+  }
+
+  const message = data.message && typeof data.message === "object" ? data.message : {};
+  let content = extractContent(message.content);
+  if (!content) {
+    return null;
+  }
+
+  content = content.replace(/\n/g, " ").split(/\s+/).filter(Boolean).join(" ");
+  if (content.length > MAX_CONTENT_LEN) {
+    content = `${content.slice(0, MAX_CONTENT_LEN)}...`;
+  }
+
+  // Map "tool" back to tool_use/tool_result for JSON consumers
+  let role = messageType;
+  if (messageType === "tool") {
+    role = "tool_result";
+  } else if (messageType === "assistant" && Array.isArray(message.content) &&
+    message.content.some((item) => item && item.type === "tool_use")) {
+    role = "tool_use";
+  }
+
+  const obj = { project, role, content };
+  if (sessionId) {
+    obj.sessionId = sessionId;
+  }
+  if (data.timestamp) {
+    obj.timestamp = data.timestamp;
+  }
+  if (message.model) {
+    obj.model = message.model;
+  }
+  if (data.costUSD != null) {
+    obj.costUSD = data.costUSD;
+  }
+  if (data.duration != null) {
+    obj.duration = data.duration;
+  }
+  if (message.usage) {
+    obj.tokenUsage = message.usage;
+  }
+
+  return JSON.stringify(obj);
+}
+
 function formatLine(line, project) {
   let data;
   try {
@@ -228,7 +284,12 @@ function findJsonlFiles(basedir) {
   return files;
 }
 
-function drainFile(filepath, filePositions, basedir) {
+function getSessionId(filepath) {
+  const basename = path.basename(filepath, ".jsonl");
+  return basename;
+}
+
+function drainFile(filepath, filePositions, basedir, jsonMode) {
   try {
     const currentSize = fs.statSync(filepath).size;
     const lastPos = filePositions.get(filepath) || 0;
@@ -238,6 +299,7 @@ function drainFile(filepath, filePositions, basedir) {
     }
 
     const project = getProjectName(filepath, basedir);
+    const sessionId = jsonMode ? getSessionId(filepath) : null;
     const bytesToRead = currentSize - lastPos;
     const fd = fs.openSync(filepath, "r");
 
@@ -252,7 +314,9 @@ function drainFile(filepath, filePositions, basedir) {
           continue;
         }
 
-        const formatted = formatLine(line, project);
+        const formatted = jsonMode
+          ? formatLineJson(line, project, sessionId)
+          : formatLine(line, project);
         if (formatted) {
           process.stdout.write(`${formatted}\n`);
         }
@@ -267,13 +331,27 @@ function drainFile(filepath, filePositions, basedir) {
   }
 }
 
+function writeInfo(message, jsonMode) {
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify({ type: "info", message }) + "\n");
+  } else {
+    process.stdout.write(`${message}\n`);
+  }
+}
+
 function run() {
-  if (process.argv.length < 3) {
-    process.stdout.write("Usage: claude-log-tail <directory>\n");
+  const args = process.argv.slice(2);
+  const jsonMode = args.includes("--json");
+  const positional = args.filter((a) => a !== "--json");
+
+  if (positional.length < 1) {
+    process.stdout.write("Usage: claude-log-tail [--json] <directory>\n");
+    process.stdout.write("\nOptions:\n");
+    process.stdout.write("  --json    Output structured NDJSON instead of colored text\n");
     process.exit(1);
   }
 
-  const basedir = path.resolve(process.argv[2]);
+  const basedir = path.resolve(positional[0]);
   if (!fs.existsSync(basedir) || !fs.statSync(basedir).isDirectory()) {
     console.error(`Error: Directory does not exist: ${basedir}`);
     process.exit(1);
@@ -291,7 +369,11 @@ function run() {
       }
     }
     clearInterval(pollTimer);
-    process.stdout.write(`\n${C_TIME}Shutting down...${C_RESET}\n`);
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify({ type: "info", message: "Shutting down..." }) + "\n");
+    } else {
+      process.stdout.write(`\n${C_TIME}Shutting down...${C_RESET}\n`);
+    }
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -321,7 +403,7 @@ function run() {
       if (!filePositions.has(filepath)) {
         continue;
       }
-      drainFile(filepath, filePositions, basedir);
+      drainFile(filepath, filePositions, basedir, jsonMode);
     }
   }
 
@@ -362,13 +444,17 @@ function run() {
           watchDirectory(path.dirname(fullPath));
 
           const project = getProjectName(fullPath, basedir);
-          const time = new Date().toLocaleTimeString("en-US", {
-            hour12: false,
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          });
-          process.stdout.write(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}\n`);
+          if (jsonMode) {
+            process.stdout.write(JSON.stringify({ type: "info", message: `New session in ${project}` }) + "\n");
+          } else {
+            const time = new Date().toLocaleTimeString("en-US", {
+              hour12: false,
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            });
+            process.stdout.write(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}\n`);
+          }
 
           changedFiles.add(fullPath);
           scheduleDrain();
@@ -431,13 +517,17 @@ function run() {
       watchDirectory(path.dirname(fullPath));
 
       const project = getProjectName(fullPath, basedir);
-      const time = new Date().toLocaleTimeString("en-US", {
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
-      process.stdout.write(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}\n`);
+      if (jsonMode) {
+        process.stdout.write(JSON.stringify({ type: "info", message: `New session in ${project}` }) + "\n");
+      } else {
+        const time = new Date().toLocaleTimeString("en-US", {
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        process.stdout.write(`${C_TIME}[${time}]${C_RESET} ${C_PROJ}[+]${C_RESET} ${project}\n`);
+      }
 
       changedFiles.add(fullPath);
       scheduleDrain();
@@ -454,7 +544,7 @@ function run() {
   }
 
   // --- Initial file discovery ---
-  process.stdout.write(`Monitoring JSONL files in: ${basedir}\n`);
+  writeInfo(`Monitoring JSONL files in: ${basedir}`, jsonMode);
 
   const knownFiles = findJsonlFiles(basedir);
   for (const filepath of knownFiles) {
@@ -466,16 +556,16 @@ function run() {
     watchDirectory(path.dirname(filepath));
   }
 
-  process.stdout.write(
-    `Monitoring ${filePositions.size} JSONL files in ${dirWatchers.size} directories.\n`,
-  );
-  process.stdout.write("Press Ctrl+C to exit.\n");
-  process.stdout.write("---\n");
+  writeInfo(`Monitoring ${filePositions.size} JSONL files in ${dirWatchers.size} directories.`, jsonMode);
+  if (!jsonMode) {
+    process.stdout.write("Press Ctrl+C to exit.\n");
+    process.stdout.write("---\n");
+  }
 
   // --- Fallback poll: stat only tracked files (no full tree walk) ---
   function pollTrackedFiles() {
     for (const filepath of filePositions.keys()) {
-      drainFile(filepath, filePositions, basedir);
+      drainFile(filepath, filePositions, basedir, jsonMode);
     }
   }
 
